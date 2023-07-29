@@ -15,10 +15,10 @@ This is a utility tool written in NodeJS which synchronizes contacts from a CSV 
 
 ```bash
 # Clone the repository
-git clone https://github.com/<Your_GitHub_Username>/contact-sync-tool.git
+git clone https://github.com/ngn-au/zoom-ecs-ts.git
 
 # Go to the project directory
-cd contact-sync-tool
+cd zoom-ecs-ts
 
 # Install the dependencies
 npm install
