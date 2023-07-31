@@ -1,68 +1,69 @@
 # Zoom External Contacts Sync 
+# Zoom External Contacts Synchronization Tool
 
-This is a utility tool written in NodeJS which synchronizes contacts from a CSV file in a Samba share with Zoom's external contacts. The tool fetches external contacts from Zoom, downloads a CSV file containing contact data from a Samba share, compares the contacts, and then adds or updates the contact details on Zoom based on the data found in the CSV.
-
-## Features
-
-1. Fetches external contacts from Zoom API and stores in a local SQLite database.
-2. Downloads a CSV file containing contact data from a Samba share.
-3. Reads, processes and compares the CSV data with the local database.
-4. Updates or adds contacts on Zoom based on the comparison result.
+## Overview
+This tool is designed to synchronize contact data from a CSV file on a Samba server with the external contacts in a Zoom account. It retrieves all external contacts from Zoom, compares them with the data in the CSV file, and performs updates or additions as necessary. If any changes are made, it sends an email report summarizing the changes.
 
 ## Installation
-
-**Note:** This tool requires Node.js 14.0 or higher.
-
-```bash
-# Clone the repository
+1. Clone the repository:
+```
 git clone https://github.com/ngn-au/zoom-ecs-ts.git
-
-# Go to the project directory
+```
+2. Navigate to the project directory and install dependencies:
+```
 cd zoom-ecs-ts
-
-# Install the dependencies
 npm install
 ```
 
-## Configuration
+## Environment Variables
+Create a `.env` file in the project root and populate the following environment variables:
 
-Create a `.env` file in the root of the project and add your environment variables.
-
-```env
-ZOOM_APP_CLIENT_ID=<zoom_app_client_id>
-ZOOM_APP_CLIENT_SECRET=<zoom_app_client_secret>
-ZOOM_APP_ACCOUNT_ID=<zoom_app_account_id>
-SAMBA_ADDRESS=<samba_address>
-SAMBA_USERNAME=<samba_username>
-SAMBA_PASSWORD=<samba_password>
-SAMBA_DOMAIN=<samba_domain>
+```
+ZOOM_APP_CLIENT_ID=your_zoom_app_client_id
+ZOOM_APP_CLIENT_SECRET=your_zoom_app_client_secret
+ZOOM_APP_ACCOUNT_ID=your_zoom_app_account_id
+SMTP_SERVER=your_smtp_server
+SMTP_PORT=your_smtp_server_port
+EMAIL_SENDER=your_email_sender
+EMAIL_RECIPIENT=your_email_recipient
+SAMBA_ADDRESS=your_samba_address
+SAMBA_USERNAME=your_samba_username
+SAMBA_PASSWORD=your_samba_password
+SAMBA_DOMAIN=your_samba_domain
 ```
 
-## Usage
-
-```bash
-# Run the tool
-ts-node-script main.ts 
+## Running the Script
+Run the script with the following command:
 ```
+ts-node-script main.ts
+```
+This will start the process, which is scheduled to run every hour.
 
-This will start the tool. It will fetch contacts from Zoom, download the CSV file from the Samba share, compare the contacts, and then update/add contacts on Zoom accordingly.
+## Key Functionalities
+1. **Fetch and Store External Contacts**: Fetches all external contacts from the Zoom account and stores them in a local SQLite database.
+2. **Retrieve CSV from Samba Server**: Connects to the specified Samba server, retrieves the CSV file containing the contact data, and stores it locally.
+3. **Process CSV and Update Contacts**: Reads the CSV file, compares the contact data with the Zoom contacts data stored in the local SQLite database, and makes necessary updates or additions to the Zoom contacts.
+4. **Send Notification Email**: If any updates or additions are made, the tool sends a summary report via email to the specified recipient.
 
-## How it works
+## Technical Requirements
+- Node.js >= 14.0.0
+- Access to a Samba server
+- A Zoom account with API access
+- SMTP server for email notifications
 
-The application is primarily split into the following main sections:
-
-1. `timestampLog` function to log messages with timestamp.
-2. `contactsAreEqual` function to compare if two contacts are equal.
-3. `updateContact` and `addContact` functions to update and add contact to Zoom respectively.
-4. `fetchAndStoreExternalContacts` function to fetch external contacts from Zoom and store them in SQLite.
-5. `retrieveCsv` function to download the CSV file from the Samba share.
-6. `processCSVAndUpdateContacts` function to process the CSV file and update/add contacts on Zoom.
-7. The `run` function which is the main entry point of the application. It calls all the above functions in sequence.
+## Dependencies
+- axios
+- sqlite3
+- dotenv
+- csv-parse
+- fs
+- samba-client
+- nodemailer
+- node-cron
 
 ## Contributing
-
-Pull requests are welcome. For major changes, please open an issue first to discuss what you would like to change.
+Please submit issues and/or pull requests if you have suggestions or changes you'd like to make.
 
 ## License
+This project is licensed under the MIT License.
 
-This project is licensed under the MIT License - see the [LICENSE.md](LICENSE.md) file for details.
