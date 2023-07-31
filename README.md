@@ -1,5 +1,4 @@
 # Zoom External Contacts Sync 
-# Zoom External Contacts Synchronization Tool
 
 ## Overview
 This tool is designed to synchronize contact data from a CSV file on a Samba server with the external contacts in a Zoom account. It retrieves all external contacts from Zoom, compares them with the data in the CSV file, and performs updates or additions as necessary. If any changes are made, it sends an email report summarizing the changes.
