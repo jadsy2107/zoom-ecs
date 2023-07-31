@@ -1,6 +1,4 @@
 import axios from 'axios'
-import sqlite3 from 'sqlite3';
-import { open } from 'sqlite';
 import dotenv from 'dotenv'; // Import dotenv for loading environment variables from .env file
 import { parse } from 'csv-parse';
 import fs from 'fs';
@@ -11,6 +9,7 @@ import cron from 'node-cron';
 dotenv.config() // Load environment variables from .env file
 
 let emailContent = '';
+const externalContacts = new Map();
 
 const CREDENTIALS_HEADER = {
     headers: { Accept: 'application/json',
@@ -170,37 +169,17 @@ async function fetchAndStoreExternalContacts() {
     .catch((e) => {
         console.error(e)
     })
-    // Create authorized header using the access_token
+    
     const AUTHORIZED_HEADER = { 
         headers: { Accept: 'application/json',
                     Authorization: 'Bearer '+access_token
         },
     }
-    // Open the SQLite database
-    const db = await open({
-        filename: './database.sqlite',
-        driver: sqlite3.Database,
-    });
-
-    // Create the table if it doesn't exist already
-    await db.run(`
-        CREATE TABLE IF NOT EXISTS external_contacts(
-            name TEXT,
-            email TEXT,
-            description TEXT,
-            external_contact_id TEXT,
-            id TEXT PRIMARY KEY,
-            routing_path TEXT,
-            phone_numbers TEXT,
-            auto_call_recorded INTEGER
-        );
-    `);
 
     let nextPageToken: string | null = null;
     let record_count = 0;
 
     do {
-        // Make the API call
         const response: any = await axios.get('https://api.zoom.us/v2/phone/external_contacts', {
             params: {
                 page_size: 300,
@@ -210,32 +189,85 @@ async function fetchAndStoreExternalContacts() {
         });
 
         const { data } = response;
-        // Store the contacts in the database
         for (const contact of data.external_contacts) {
-            await db.run(
-                `
-                    INSERT OR REPLACE INTO external_contacts
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?);
-                `,
-                contact.name,
-                contact.email,
-                contact.description,
-                contact.external_contact_id,
-                contact.id,
-                contact.routing_path,
-                JSON.stringify(contact.phone_numbers),
-                contact.auto_call_recorded ? 1 : 0
-            );
+            externalContacts.set(contact.id, {
+                name: contact.name,
+                email: contact.email,
+                description: contact.description,
+                external_contact_id: contact.external_contact_id,
+                id: contact.id,
+                routing_path: contact.routing_path,
+                phone_numbers: JSON.stringify(contact.phone_numbers),
+                auto_call_recorded: contact.auto_call_recorded ? 1 : 0
+            });
         }
 
-        // Update nextPageToken to fetch the next set of results
         nextPageToken = data.next_page_token;
         timestampLog(`Retrieved ${record_count + 1} - ${record_count + data.external_contacts.length} of ${data.total_records}`);
         record_count += data.external_contacts.length;
 
     } while (nextPageToken);
+}
 
-    await db.close();
+async function processCSVAndUpdateContacts() {
+    return new Promise<void>(async (resolve, reject) => {
+        const input = fs.readFileSync('./contacts.csv', 'utf8');
+        const records: any = [];
+
+        const parser = parse({
+            delimiter: ',',
+            columns: true,
+            skip_empty_lines: true
+        });
+
+        parser.on('readable', function() {
+            let record;
+            while ((record = parser.read()) !== null) {
+                records.push(record);
+            }
+        });
+
+        parser.on('error', function(err: any) {
+            console.error(err.message);
+        });
+
+        parser.on('end', async function() {
+            for (const record of records) {
+                const result = externalContacts.get(record.ID);
+                const csvContact = {
+                    id: record.ID,
+                    name: record['Name (Required)'].trim(),
+                    email: record.Email.trim(),
+                    phone_numbers: record['Phone Number'].split(',').map((phone: string) => phone.trim().replace(/\s/g, '')),
+                    description: record.Description.trim(),
+                    auto_call_recorded: record['Automatic Call Recording'] === 'Yes' ? 1 : 0
+                };
+
+                if (result) {
+                    if (!contactsAreEqual(result, csvContact)) {
+                        timestampLog(`Changes with contact ${result.id}: ${result.name}, Updating...`)
+                        console.log("From: ", result)
+                        console.log("To: ", csvContact)
+                        if (await updateContact(result.external_contact_id, csvContact)) {
+                            externalContacts.set(csvContact.id, csvContact);
+                            timestampLog(`Updated record for ${csvContact.id}: ${csvContact.name} `)
+                        }
+                    }
+                } else {
+                    timestampLog(`New contact ${csvContact.id}: ${csvContact.name}, Adding...`)
+                    if (await addContact(csvContact)) {
+                        externalContacts.set(csvContact.id, csvContact);
+                        timestampLog(`Added record for ${csvContact.id}: ${csvContact.name} `)
+                    }
+                }
+            }
+
+            resolve(records.length);
+        });
+
+        parser.write(input);
+        parser.end();
+    })
 }
 
 async function retrieveCsv() {
@@ -259,110 +291,9 @@ async function retrieveCsv() {
     }
 }
 
-
-async function processCSVAndUpdateContacts() {
-    return new Promise<void>(async (resolve, reject) => {
-        const input = fs.readFileSync('./contacts.csv', 'utf8');
-        const records: any = [];
-
-        // Initialize the parser
-        const parser = parse({
-            delimiter: ',',
-            columns: true,
-            skip_empty_lines: true
-        });
-
-        // Use the readable stream API to consume records
-        parser.on('readable', function() {
-            let record;
-            while ((record = parser.read()) !== null) {
-                records.push(record);
-            }
-        });
-
-        // Catch any error
-        parser.on('error', function(err: any) {
-            console.error(err.message);
-        });
-
-        // Once the parsing is finished, process the records
-        parser.on('end', async function() {
-            const db = await open({
-                filename: './database.sqlite',
-                driver: sqlite3.Database,
-            });
-
-            for (const record of records) {
-                const result = await db.get('SELECT * FROM external_contacts WHERE id = ?', record.ID);
-                const csvContact = {
-                    id: record.ID,
-                    name: record['Name (Required)'].trim(),
-                    email: record.Email.trim(),
-                    phone_numbers: record['Phone Number'].split(',').map((phone: string) => phone.trim().replace(/\s/g, '')),
-                    description: record.Description.trim(),
-                    auto_call_recorded: record['Automatic Call Recording'] === 'Yes' ? 1 : 0
-                };
-                if (result) {
-                    // The contact exists in the database, now compare it with the CSV version     
-                    if (!contactsAreEqual(result, csvContact)) {
-                        timestampLog(`Changes with contact ${result.id}: ${result.name}, Updating...`)
-                        console.log("From: ", result)
-                        console.log("To: ", csvContact)
-                        if (await updateContact(result.external_contact_id, csvContact)) {
-                            await db.run(
-                                `
-                                    UPDATE external_contacts SET name = ?, email = ?, description = ?, phone_numbers = ?, auto_call_recorded = ? WHERE id = ?
-                                `,
-                                csvContact.name,
-                                csvContact.email,
-                                csvContact.description,
-                                JSON.stringify(csvContact.phone_numbers),
-                                csvContact.auto_call_recorded,
-                                csvContact.id
-                            ).then((res) => {
-                                if (res.changes === 1) {
-                                    timestampLog(`Updated SQLite record for ${csvContact.id}: ${csvContact.name} `)
-                                }
-                            });
-                        }
-
-                    }
-                } else {
-                    // If the result is null, the contact does not exist in the SQLite database. Add the new contact.
-                    timestampLog(`New contact ${csvContact.id}: ${csvContact.name}, Adding...`)
-                    if (await addContact(csvContact)) {
-                        await db.run(
-                            `
-                                INSERT INTO external_contacts (id, name, email, description, phone_numbers, auto_call_recorded) VALUES (?, ?, ?, ?, ?, ?)
-                            `,
-                            csvContact.id,
-                            csvContact.name,
-                            csvContact.email,
-                            csvContact.description,
-                            JSON.stringify(csvContact.phone_numbers),
-                            csvContact.auto_call_recorded
-                        ).then((res) => {
-                            if (res.changes === 1) {
-                                timestampLog(`Added SQLite record for ${csvContact.id}: ${csvContact.name} `)
-                            }
-                        });
-                    }
-                }
-            }
-            
-            await db.close();
-            resolve(records.length);
-        });
-
-        // Write data to the stream
-        parser.write(input);
-        // Close the readable stream
-        parser.end();
-    })
-}
-
 async function run() {
     try {
+        emailContent = '';
         timestampLog(`------ START CONTACT IMPORT --------`)
         timestampLog(`Retrieving external contacts from Zoom`)
         await fetchAndStoreExternalContacts()
