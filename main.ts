@@ -5,8 +5,12 @@ import dotenv from 'dotenv'; // Import dotenv for loading environment variables 
 import { parse } from 'csv-parse';
 import fs from 'fs';
 import SambaClient from 'samba-client';
+import nodemailer from 'nodemailer';
+import cron from 'node-cron';
 
 dotenv.config() // Load environment variables from .env file
+
+let emailContent = '';
 
 const CREDENTIALS_HEADER = {
     headers: { Accept: 'application/json',
@@ -64,22 +68,28 @@ async function updateContact(externalContactId: any, contact: any) {
         );
 
         if (patchResponse.status === 204) {
-            timestampLog(`Updated Zoom record for ${contact.id}: ${contact.name}`)
+            let message = `Updated Zoom record for ${contact.id}: ${contact.name}`;
+            timestampLog(message);
+            emailContent += message + '<br>';
             return true;
         } else {
-            timestampLog(`Failed to update ${contact.id}: ${contact.name} to Zoom. Status code: ${patchResponse.status}`);
+            let message = `Error updating Zoom record for ${contact.id}: ${contact.name}: ${patchResponse.data}`;
+            timestampLog(message);
+            emailContent += message + '<br>';
             return false;
         }
     } catch (error: any) {
+        let message;
         if (error.response) {
-            timestampLog(`Failed to update ${contact.id}: ${contact.name} to Zoom. ${error.response.data.message}`)
+            message = `Failed to update ${contact.id}: ${contact.name} to Zoom. ${error.response.data.message}`;
         } else {
-            timestampLog(`Failed to update ${contact.id}: ${contact.name} to Zoom. ${error.message}`)
+            message = `Failed to update ${contact.id}: ${contact.name} to Zoom. ${error.message}`;
         }
+        timestampLog(message);
+        emailContent += message + '<br>';
         return false;
     }
 }
-
 
 async function addContact(contact: any) {
     try {
@@ -106,20 +116,49 @@ async function addContact(contact: any) {
         );
 
         if (postResponse.status === 201) {
-            timestampLog(`${contact.id}: ${contact.name} added to Zoom.`)
+            let message = `${contact.id}: ${contact.name} added to Zoom.`;
+            timestampLog(message);
+            emailContent += message + '<br>';
             return true;
         } else {
-            timestampLog(`Failed to add ${contact.id}: ${contact.name} to Zoom. Status code: ${postResponse.status}`);
+            let message = `Error adding ${contact.id}: ${contact.name} to Zoom: ${postResponse.data}`;
+            timestampLog(message);
+            emailContent += message + '<br>';
             return false;
         }
     } catch (error: any) {
+        let message;
         if (error.response) {
-            timestampLog(`Failed to add ${contact.id}: ${contact.name} to Zoom. ${error.response.data.message}`)
+            message = `Failed to add ${contact.id}: ${contact.name} to Zoom. ${error.response.data.message}`;
         } else {
-            timestampLog(`Failed to add ${contact.id}: ${contact.name} to Zoom. ${error.message}`)
+            message = `Failed to add ${contact.id}: ${contact.name} to Zoom. ${error.message}`;
         }
+        timestampLog(message);
+        emailContent += message + '<br>';
         return false;
-    }    
+    }
+}
+
+async function sendNotificationEmail() {
+    const transporter = nodemailer.createTransport({
+        host: process.env.SMTP_SERVER,
+        port: Number(process.env.SMTP_PORT || 25),
+        secure: false,
+    });
+
+    const mailOptions = {
+        from: process.env.EMAIL_SENDER,
+        to: process.env.EMAIL_RECIPIENT,
+        subject: 'Contacts Update Report',
+        html: emailContent,
+    };
+
+    try {
+        await transporter.sendMail(mailOptions);
+        timestampLog('Report email sent.');
+    } catch (err) {
+        timestampLog('Error sending email');
+    }
 }
 
 async function fetchAndStoreExternalContacts() {
@@ -211,14 +250,10 @@ async function retrieveCsv() {
     });
 
     try {
-        // define the remote path
-        const remotePath = '/PE contacts.csv'; // replace this with the actual path
-        const localPath = './contacts.csv'; // local file path
-
-        // download the file
+        const remotePath = '/PE contacts.csv'; 
+        const localPath = './contacts.csv';
         await client.getFile(remotePath, localPath);
-        // console.log(await client.dir('/'))
-        // console.log('File downloaded successfully.');
+
     } catch (error) {
         console.error('Error downloading file:', error);
     }
@@ -327,14 +362,24 @@ async function processCSVAndUpdateContacts() {
 }
 
 async function run() {
-    timestampLog(`------ START CONTACT IMPORT --------`)
-    timestampLog(`Retrieving external contacts from Zoom`)
-    await fetchAndStoreExternalContacts()
-    timestampLog(`Retrieving CSV file from ${process.env.SAMBA_ADDRESS}`)
-    await retrieveCsv()
-    timestampLog(`Reading CSV data and comparing with Zoom data`)
-    timestampLog(`${await processCSVAndUpdateContacts()} records processed from CSV.`) // add await here
-    timestampLog(`------ END CONTACT IMPORT ----------`)
+    try {
+        timestampLog(`------ START CONTACT IMPORT --------`)
+        timestampLog(`Retrieving external contacts from Zoom`)
+        await fetchAndStoreExternalContacts()
+        timestampLog(`Retrieving CSV file from ${process.env.SAMBA_ADDRESS}`)
+        await retrieveCsv()
+        timestampLog(`Reading CSV data and comparing with Zoom data`)
+        timestampLog(`${await processCSVAndUpdateContacts()} records processed from CSV.`)
+        if (emailContent !== '') {
+            timestampLog(`Sending report email`)
+            await sendNotificationEmail();
+        }
+        timestampLog(`------ END CONTACT IMPORT ----------`)
+    } catch (error) {
+        console.error('Error in main execution:', error);
+    }
 }
 
-run()
+cron.schedule('0 * * * *', async () => {
+    await run();
+});
