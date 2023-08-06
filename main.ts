@@ -17,6 +17,20 @@ const CREDENTIALS_HEADER = {
     },
 }
 
+async function getAccessToken() {
+    try {
+        const response = await axios.post(
+            'https://zoom.us/oauth/token?grant_type=account_credentials&account_id='+process.env.ZOOM_APP_ACCOUNT_ID, 
+            '', 
+            CREDENTIALS_HEADER
+        );
+        return response.data.access_token;
+    } catch (error) {
+        console.error('Error fetching access token:', error);
+        throw error;
+    }
+}
+
 const logLocaleOptions: Intl.DateTimeFormatOptions = {
     second: 'numeric',
     hour: 'numeric',
@@ -34,23 +48,59 @@ function timestampLog(message: any) {
 }
 
 function contactsAreEqual(a: any, b: any) {
-    return a.id === b.id
+        return a.id === b.id
         && a.name === b.name
         && a.email === b.email
         && a.description === b.description
-        && JSON.stringify(JSON.parse(a.phone_numbers)) === JSON.stringify(b.phone_numbers) // parsing `a.phone_numbers` to an array before comparison
+        && JSON.stringify(JSON.parse(a.phone_numbers)) === JSON.stringify(b.phone_numbers)
         && a.auto_call_recorded === b.auto_call_recorded
 }
 
-async function updateContact(externalContactId: any, contact: any) {
+async function deleteContact(externalContactId: any) {
     try {
-        const response = await axios.post(
-            'https://zoom.us/oauth/token?grant_type=account_credentials&account_id='+process.env.ZOOM_APP_ACCOUNT_ID, 
-            '', 
-            CREDENTIALS_HEADER
+        const access_token = await getAccessToken();
+
+        const AUTHORIZED_HEADER = { 
+            headers: { 
+                Accept: 'application/json',
+                Authorization: 'Bearer '+access_token,
+                'Content-Type': 'application/json',
+            },
+        };
+
+        const deleteResponse = await axios.delete(
+            `https://api.zoom.us/v2/phone/external_contacts/${externalContactId}`, 
+            AUTHORIZED_HEADER
         );
 
-        const access_token = response.data.access_token;
+        if (deleteResponse.status === 204) {
+            let message = `Deleted Zoom record with external ID ${externalContactId}`;
+            timestampLog(message);
+            emailContent += message + '<br>';
+            return true;
+        } else {
+            let message = `Error deleting Zoom record with external ID ${externalContactId}: ${deleteResponse.data}`;
+            timestampLog(message);
+            emailContent += message + '<br>';
+            return false;
+        }
+    } catch (error: any) {
+        let message;
+        if (error.response) {
+            message = `Failed to delete Zoom record with external ID ${externalContactId}. ${error.response.data.message}`;
+        } else {
+            message = `Failed to delete Zoom record with external ID ${externalContactId}. ${error.message}`;
+        }
+        timestampLog(message);
+        emailContent += message + '<br>';
+        return false;
+    }
+}
+
+async function updateContact(externalContactId: any, contact: any) {
+    console.log(contact.phone_numbers)
+    try {
+        const access_token = await getAccessToken();
 
         const AUTHORIZED_HEADER = { 
             headers: { 
@@ -92,13 +142,7 @@ async function updateContact(externalContactId: any, contact: any) {
 
 async function addContact(contact: any) {
     try {
-        const response = await axios.post(
-            'https://zoom.us/oauth/token?grant_type=account_credentials&account_id='+process.env.ZOOM_APP_ACCOUNT_ID, 
-            '', 
-            CREDENTIALS_HEADER
-        );
-
-        const access_token = response.data.access_token;
+        const access_token = await getAccessToken();
 
         const AUTHORIZED_HEADER = { 
             headers: { 
@@ -148,27 +192,20 @@ async function sendNotificationEmail() {
     const mailOptions = {
         from: process.env.EMAIL_SENDER,
         to: process.env.EMAIL_RECIPIENT,
-        subject: 'Contacts Update Report',
+        subject: 'Zoom Contacts Update Report',
         html: emailContent,
     };
 
     try {
         await transporter.sendMail(mailOptions);
-        timestampLog('Report email sent.');
+        timestampLog(`Report email sent to: ${process.env.EMAIL_RECIPIENT}`);
     } catch (err) {
         timestampLog('Error sending email');
     }
 }
 
 async function fetchAndStoreExternalContacts() {
-    let access_token = await axios
-    .post('https://zoom.us/oauth/token?grant_type=account_credentials&account_id='+process.env.ZOOM_APP_ACCOUNT_ID, '', CREDENTIALS_HEADER)
-    .then((response) => {
-        return response.data.access_token
-    })
-    .catch((e) => {
-        console.error(e)
-    })
+    const access_token = await getAccessToken();
     
     const AUTHORIZED_HEADER = { 
         headers: { Accept: 'application/json',
@@ -210,9 +247,10 @@ async function fetchAndStoreExternalContacts() {
 }
 
 async function processCSVAndUpdateContacts() {
-    return new Promise<void>(async (resolve, reject) => {
+    return new Promise<Set<any>>(async (resolve, reject) => {
         const input = fs.readFileSync('./contacts.csv', 'utf8');
         const records: any = [];
+        const csvIds: Set<any> = new Set();
 
         const parser = parse({
             delimiter: ',',
@@ -248,21 +286,16 @@ async function processCSVAndUpdateContacts() {
                         timestampLog(`Changes with contact ${result.id}: ${result.name}, Updating...`)
                         console.log("From: ", result)
                         console.log("To: ", csvContact)
-                        if (await updateContact(result.external_contact_id, csvContact)) {
-                            externalContacts.set(csvContact.id, csvContact);
-                            timestampLog(`Updated record for ${csvContact.id}: ${csvContact.name} `)
-                        }
+                        await updateContact(result.external_contact_id, csvContact)
                     }
                 } else {
                     timestampLog(`New contact ${csvContact.id}: ${csvContact.name}, Adding...`)
-                    if (await addContact(csvContact)) {
-                        externalContacts.set(csvContact.id, csvContact);
-                        timestampLog(`Added record for ${csvContact.id}: ${csvContact.name} `)
-                    }
+                    await addContact(csvContact)
                 }
+                csvIds.add(record.ID);
             }
 
-            resolve(records.length);
+            resolve(csvIds);
         });
 
         parser.write(input);
@@ -291,6 +324,8 @@ async function retrieveCsv() {
     }
 }
 
+const args = process.argv.slice(2); // This line gets the arguments passed in the command line
+
 async function run() {
     try {
         emailContent = '';
@@ -300,10 +335,19 @@ async function run() {
         timestampLog(`Retrieving CSV file from ${process.env.SAMBA_ADDRESS}`)
         await retrieveCsv()
         timestampLog(`Reading CSV data and comparing with Zoom data`)
-        timestampLog(`${await processCSVAndUpdateContacts()} records processed from CSV.`)
+        const csvIds = await processCSVAndUpdateContacts()
+        timestampLog(`${csvIds.size} records processed from CSV.`)
+        for (const [id, contact] of externalContacts.entries()) {
+            if (!csvIds.has(id)) {
+                timestampLog(`Contact ${id}: ${contact.name} not found in CSV, Deleting...`)
+                await deleteContact(contact.external_contact_id)
+            }
+        }
         if (emailContent !== '') {
             timestampLog(`Sending report email`)
             await sendNotificationEmail();
+        } else {
+            timestampLog(`No changes found.`)
         }
         timestampLog(`------ END CONTACT IMPORT ----------`)
     } catch (error) {
@@ -311,6 +355,12 @@ async function run() {
     }
 }
 
-cron.schedule('0 * * * *', async () => {
-    await run();
-});
+// If the first argument is '--now', the script will run immediately
+if (args[0] === '--now') {
+    run();
+} else {
+    // Otherwise, it will run on the cron schedule
+    cron.schedule('0 * * * *', async () => {
+        await run();
+    });
+}
